@@ -1,7 +1,7 @@
 {
   "name": "beatfinder",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "description": "Real-time rhythm and harmony event detection for the Web Audio API -- detected/predicted beats, downbeats, loudness spikes, chord changes, and key changes.",
   "keywords": [
     "web-audio",
@@ -13,6 +13,11 @@
     "rhythm"
   ],
   "license": "MIT",
+  "homepage": "https://mrericsir.github.io/beatfinder/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrEricSir/beatfinder.git"
+  },
   "type": "module",
   "main": "beatfinder.js",
   "module": "beatfinder.js",
