@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>beatfinder</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="icon-16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Raleway:wght@100;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/tuicss@2.1.2/dist/tuicss.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Start overlay (also used for system permissions) -->
+  <div id="overlay" class="overlay">
+    <canvas id="scope-canvas" class="scope-canvas"></canvas>
+    <div class="overlay-content">
+      <h1><span class="title-beat">beat</span><span class="title-finder">finder</span></h1>
+      <p class="overlay-hint">Tap to Begin</p>
+      <p id="error-msg" class="error-msg hidden"></p>
+    </div>
+  </div>
+
+  <!-- Event squares -->
+  <div id="grid">
+    <div class="quad" id="quad-peak">
+      <span class="quad-label">Detected Beat</span>
+    </div>
+    <div class="quad" id="quad-predicted">
+      <span class="quad-label">Predicted Beat</span>
+    </div>
+    <div class="quad" id="quad-chord">
+      <span class="quad-label">Chord Change</span>
+    </div>
+    <div class="quad" id="quad-downbeat">
+      <span class="quad-label">Downbeat</span>
+    </div>
+    <div class="quad" id="quad-loudness">
+      <span class="quad-label">Loudness Spike</span>
+    </div>
+    <div class="quad" id="quad-key">
+      <span class="quad-label">Key</span>
+    </div>
+  </div>
+
+  <div id="status-bar" class="bpm-display hidden">-- BPM</div>
+
+  <!-- Control panel -->
+  <div id="controls" class="controls hidden">
+    <fieldset class="tui-fieldset">
+      <legend>&nbsp;beatfinder&nbsp;</legend>
+
+      <div class="controls-row">
+        <button id="btn-mic" class="tui-button mode-btn purple-168 white-text" style="flex:1">Mic</button>
+        <button id="btn-open-file" class="tui-button mode-btn" style="flex:1">Open File</button>
+        <button id="btn-tuning" class="tui-button mode-btn" style="flex:1">Tuning</button>
+        <input type="file" id="file-input" accept="audio/*" hidden>
+      </div>
+
+      <!-- File player, shown only once a file is loaded -->
+      <div id="file-player" class="file-player hidden">
+        <p id="play-track-name" class="play-track-name">No file selected</p>
+        <div class="seek-wrap">
+          <input type="range" id="seek-bar" min="0" max="1000" value="0" step="1" disabled>
+        </div>
+        <div class="time-display">
+          <span id="time-current">--:--</span>
+          <span id="time-total">--:--</span>
+        </div>
+        <div class="controls-row player-controls">
+          <button id="btn-skip-back"    class="tui-button">&#x25C4;&#x25C4;</button>
+          <button id="btn-play-pause"   class="tui-button" style="flex:1" disabled>&#x25BA; Play</button>
+          <button id="btn-skip-forward" class="tui-button">&#x25BA;&#x25BA;</button>
+        </div>
+      </div>
+
+      <!-- Tuning panel, populated by app.js from beatfinder.js's config schema -->
+      <div id="tuning-panel" class="tuning-panel hidden"></div>
+
+    </fieldset>
+  </div>
+
+  <!-- Semicircle toggle button -->
+  <button id="btn-show-controls" class="btn btn-fab hidden" title="Open controls">&#9650;</button>
+
+  <script src="https://unpkg.com/tuicss@2.1.2/dist/tuicss.min.js"></script>
+  <script src="https://unpkg.com/meyda@5.6.3/dist/web/meyda.min.js"></script>
+  <script src="app.js"></script>
+  
+</body>
+</html>

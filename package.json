@@ -1,0 +1,38 @@
+{
+  "name": "beatfinder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Real-time rhythm and harmony event detection for the Web Audio API -- detected/predicted beats, downbeats, loudness spikes, chord changes, and key changes.",
+  "keywords": [
+    "web-audio",
+    "beat-detection",
+    "bpm",
+    "tempo",
+    "chroma",
+    "music-information-retrieval",
+    "rhythm"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "beatfinder.js",
+  "module": "beatfinder.js",
+  "types": "beatfinder.d.ts",
+  "exports": {
+    ".": {
+      "types": "./beatfinder.d.ts",
+      "import": "./beatfinder.js",
+      "default": "./beatfinder.js"
+    }
+  },
+  "files": [
+    "beatfinder.js",
+    "beatfinder.d.ts",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}

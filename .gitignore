@@ -1,0 +1,11 @@
+# Runtime
+.dev-server.pid
+
+# Dependencies
+node_modules/
+
+# Test output.
+test-results/
+
+# Used for local tests (not source)
+audio/
