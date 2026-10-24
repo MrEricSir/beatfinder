@@ -119,6 +119,22 @@ value in `DEFAULT_CONFIG`, generated from a small schema in `app.js` (see
 `TUNING_GROUPS`) rather than hand-written per field. It's a demonstration
 of `getConfig`/`setConfig`, not a separate feature of the library itself.
 
+A **Record** button captures the same (pre-boost) audio the active engine
+is analyzing, along with a timestamped JSON log of every event it emits,
+so a real-world session -- a club set, a show -- can be checked for
+accuracy afterward instead of only tuned live in the moment. Recording
+works in both Mic and Open File mode; switching modes is disabled while a
+recording is in progress, since both the engine and the recording are
+built on the same `AudioContext`.
+
+Saving uses the Web Share API when the platform supports sharing files
+(this is how iOS gets the two files out of the browser -- the native
+share sheet's "Save to Files" can write straight to iCloud Drive). Where
+that isn't available, two buttons appear for saving the audio and the log
+separately -- browsers silently block a second automatic download that
+isn't tied to its own direct click, so one combined "download both"
+button wouldn't reliably deliver both files.
+
 ## Development
 
 Note: This has only been tested on macOS.

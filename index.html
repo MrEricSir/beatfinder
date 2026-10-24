@@ -53,6 +53,7 @@
   </div>
 
   <div id="status-bar" class="bpm-display hidden">-- BPM</div>
+  <div id="record-indicator" class="record-indicator hidden">REC <span id="record-time">0:00</span></div>
 
   <!-- Control panel -->
   <div id="controls" class="controls hidden">
@@ -63,6 +64,7 @@
         <button id="btn-mic" class="tui-button mode-btn purple-168 white-text" style="flex:1">Mic</button>
         <button id="btn-open-file" class="tui-button mode-btn" style="flex:1">Open File</button>
         <button id="btn-tuning" class="tui-button mode-btn" style="flex:1">Tuning</button>
+        <button id="btn-record" class="tui-button mode-btn" style="flex:1">Record</button>
         <input type="file" id="file-input" accept="audio/*" hidden>
       </div>
 
@@ -85,6 +87,15 @@
 
       <!-- Tuning panel, populated by app.js from beatfinder.js's config schema -->
       <div id="tuning-panel" class="tuning-panel hidden"></div>
+
+      <!-- Save panel, displayed when recording stops if needed -->
+      <div id="save-recording-panel" class="save-recording-panel hidden">
+        <p class="save-recording-label">Recording ready to save:</p>
+        <div class="controls-row">
+          <button id="btn-save-audio" class="tui-button" style="flex:1">Save Audio</button>
+          <button id="btn-save-log" class="tui-button" style="flex:1">Save Log</button>
+        </div>
+      </div>
 
     </fieldset>
   </div>

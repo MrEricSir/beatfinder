@@ -81,6 +81,49 @@ html, body {
   letter-spacing: 0.02em;
 }
 
+#record-indicator {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  right: 12px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: #ff3b3b;
+  background: var(--panel-bg);
+  padding: 4px 12px;
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+#record-indicator::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff3b3b;
+  animation: record-blink 1s steps(2, start) infinite;
+}
+
+@keyframes record-blink {
+  50% { opacity: 0.15; }
+}
+
+#record-indicator.hidden {
+  display: none;
+}
+
+.record-btn-active {
+  background: #ff3b3b !important;
+  color: #fff !important;
+  outline: 2px solid #fff;
+}
+
 /* Overlay */
 .overlay {
   position: fixed;
@@ -371,6 +414,25 @@ input[type="range"]::-moz-range-thumb {
   font-family: inherit;
   font-size: 0.75rem;
   padding: 4px;
+}
+
+/* Save-recording fallback panel */
+.save-recording-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.save-recording-panel.hidden {
+  display: none;
+}
+
+.save-recording-label {
+  font-size: 0.78rem;
+  color: #aaaaff;
 }
 
 /* Error message */

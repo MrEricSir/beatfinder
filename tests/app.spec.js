@@ -186,3 +186,49 @@ test('clicking Mic after a file is loaded switches back to mic mode', async ({ p
   await page.locator('#btn-mic').click();
   await expect(page.locator('#btn-mic')).toHaveClass(/mode-btn-active/);
 });
+
+// ---- Recording ----
+
+test('Record button toggles state, indicator, and disables mode switching', async ({ page }) => {
+  await openControls(page);
+  await expect(page.locator('#record-indicator')).toBeHidden();
+
+  await page.locator('#btn-record').click();
+  await expect(page.locator('#btn-record')).toHaveText('Stop');
+  await expect(page.locator('#record-indicator')).toBeVisible();
+  await expect(page.locator('#btn-mic')).toBeDisabled();
+  await expect(page.locator('#btn-open-file')).toBeDisabled();
+
+  await page.locator('#btn-record').click();
+  await expect(page.locator('#btn-record')).toHaveText('Record');
+  await expect(page.locator('#record-indicator')).toBeHidden();
+  await expect(page.locator('#btn-mic')).toBeEnabled();
+  await expect(page.locator('#btn-open-file')).toBeEnabled();
+});
+
+test('stopping a recording offers Save Audio and Save Log as two separate downloads', async ({ page }) => {
+  await openControls(page);
+
+  await page.locator('#btn-record').click();
+  await page.waitForTimeout(500);
+  await page.locator('#btn-record').click();
+
+  await expect(page.locator('#save-recording-panel')).toBeVisible();
+
+  const audioDownload = page.waitForEvent('download');
+  await page.locator('#btn-save-audio').click();
+  const audioFile = await audioDownload;
+  expect(audioFile.suggestedFilename()).toMatch(/^beatfinder-.+\.(webm|m4a)$/);
+  await expect(page.locator('#btn-save-audio')).toBeDisabled();
+
+  const logDownload = page.waitForEvent('download');
+  await page.locator('#btn-save-log').click();
+  const logFile = await logDownload;
+  expect(logFile.suggestedFilename()).toMatch(/^beatfinder-.+\.json$/);
+
+  // Both files share the same timestamp stem, so they're recognizable as a pair.
+  expect(logFile.suggestedFilename().replace(/\.json$/, ''))
+    .toBe(audioFile.suggestedFilename().replace(/\.(webm|m4a)$/, ''));
+
+  await expect(page.locator('#save-recording-panel')).toBeHidden();
+});

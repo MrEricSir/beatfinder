@@ -20,6 +20,12 @@ const micBtn       = document.getElementById('btn-mic');
 const openFileBtn  = document.getElementById('btn-open-file');
 const tuningBtn    = document.getElementById('btn-tuning');
 const tuningPanel  = document.getElementById('tuning-panel');
+const recordBtn    = document.getElementById('btn-record');
+const recordIndicator = document.getElementById('record-indicator');
+const recordTimeEl    = document.getElementById('record-time');
+const saveRecordingPanel = document.getElementById('save-recording-panel');
+const saveAudioBtn    = document.getElementById('btn-save-audio');
+const saveLogBtn      = document.getElementById('btn-save-log');
 const fileInput    = document.getElementById('file-input');
 const filePlayer   = document.getElementById('file-player');
 const playPauseBtn = document.getElementById('btn-play-pause');
@@ -186,7 +192,9 @@ const dependenciesPromise = Promise.all([
 // Only one engine runs at a time; starting a new one always tears down the
 // previous one first.
 
-let activeEngine = null;
+let activeEngine        = null;
+let activeAudioContext  = null;
+let activeSourceNode    = null;
 
 async function startAudioEngine(audioContext, source, { boost, audible }) {
   if (audible) source.connect(audioContext.destination);
@@ -201,16 +209,17 @@ async function startAudioEngine(audioContext, source, { boost, audible }) {
     createRealtimeBpmAnalyzer,
   });
 
-  engine.on('peak', () => flashQuadrant(quadPeak));
-  engine.on('predictedBeat', () => flashQuadrant(quadPredicted));
-  engine.on('downbeat', () => flashQuadrant(quadDownbeat));
-  engine.on('loudnessSpike', () => flashQuadrant(quadLoudness));
-  engine.on('chordChange', () => flashQuadrant(quadChord));
-  engine.on('bpmChange', ({ bpm }) => updateBpmDisplay(`${Math.round(bpm)} BPM`));
-  engine.on('tempoLost', () => updateBpmDisplay('listening...'));
-  engine.on('keyChange', ({ key }) => {
-    quadKeyLabel.textContent = key;
+  engine.on('peak', () => { flashQuadrant(quadPeak); logRecordedEvent('peak', {}); });
+  engine.on('predictedBeat', (payload) => { flashQuadrant(quadPredicted); logRecordedEvent('predictedBeat', payload); });
+  engine.on('downbeat', (payload) => { flashQuadrant(quadDownbeat); logRecordedEvent('downbeat', payload); });
+  engine.on('loudnessSpike', (payload) => { flashQuadrant(quadLoudness); logRecordedEvent('loudnessSpike', payload); });
+  engine.on('chordChange', (payload) => { flashQuadrant(quadChord); logRecordedEvent('chordChange', payload); });
+  engine.on('bpmChange', (payload) => { updateBpmDisplay(`${Math.round(payload.bpm)} BPM`); logRecordedEvent('bpmChange', payload); });
+  engine.on('tempoLost', () => { updateBpmDisplay('listening...'); logRecordedEvent('tempoLost', {}); });
+  engine.on('keyChange', (payload) => {
+    quadKeyLabel.textContent = payload.key;
     flashQuadrant(quadKey);
+    logRecordedEvent('keyChange', payload);
   });
 
   updateBpmDisplay('listening...');
@@ -221,6 +230,11 @@ async function startAudioEngine(audioContext, source, { boost, audible }) {
 }
 
 function tearDownActiveEngine() {
+  // Stop. Save any recording in progress here.
+  if (isRecording) {
+    stopRecording();
+  }
+
   if (activeEngine) {
     // Safe here specifically because this app always builds a fresh
     // AudioContext per mic/file session (see startMicMode/loadAudioFile)
@@ -228,7 +242,202 @@ function tearDownActiveEngine() {
     activeEngine.stop({ closeContext: true });
     activeEngine = null;
   }
+  activeAudioContext = null;
+  activeSourceNode    = null;
   statusBar.classList.add('hidden');
+}
+
+// ---- Recording ----
+
+// Capture the original audio before we analyze it here for later debugging.
+
+const mediaRecorderSupported = typeof MediaRecorder !== 'undefined';
+
+const RECORDER_MIME_CANDIDATES = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
+
+function pickRecorderMimeType() {
+  for (const candidate of RECORDER_MIME_CANDIDATES) {
+    if (MediaRecorder.isTypeSupported(candidate)) return candidate;
+  }
+  return '';
+}
+
+function extensionForMimeType(mimeType) {
+  if (mimeType.includes('mp4'))  return 'm4a';
+  if (mimeType.includes('webm')) return 'webm';
+  return 'audio';
+}
+
+let isRecording          = false;
+let mediaRecorder         = null;
+let recordedChunks        = [];
+let recordedEvents        = [];
+let recordingStartPerf    = null;
+let recordingDestination  = null;
+let recordingSourceNode   = null;
+let recordingTimerId      = null;
+
+function logRecordedEvent(name, payload) {
+  if (!isRecording) {
+    return;
+  }
+
+  recordedEvents.push({ t: Math.round(performance.now() - recordingStartPerf), event: name, ...payload });
+}
+
+function updateRecordButton() {
+  recordBtn.textContent = isRecording ? 'Stop' : 'Record';
+  recordBtn.classList.toggle('record-btn-active', isRecording);
+  micBtn.disabled      = isRecording;
+  openFileBtn.disabled = isRecording;
+}
+
+function updateRecordTimeDisplay() {
+  const elapsedSeconds = (performance.now() - recordingStartPerf) / 1000;
+  recordTimeEl.textContent = formatDuration(elapsedSeconds);
+}
+
+function startRecording() {
+  if (isRecording || !activeAudioContext || !activeSourceNode) {
+    return;
+  }
+
+  recordingDestination = activeAudioContext.createMediaStreamDestination();
+  recordingSourceNode  = activeSourceNode;
+  recordingSourceNode.connect(recordingDestination);
+
+  const mimeType = pickRecorderMimeType();
+  mediaRecorder = mimeType
+    ? new MediaRecorder(recordingDestination.stream, { mimeType })
+    : new MediaRecorder(recordingDestination.stream);
+
+  recordedChunks     = [];
+  recordedEvents     = [];
+  recordingStartPerf = performance.now();
+
+  mediaRecorder.addEventListener('dataavailable', (e) => {
+    if (e.data.size > 0) {
+      recordedChunks.push(e.data);
+    }
+  });
+
+  mediaRecorder.start();
+  isRecording = true;
+  updateRecordButton();
+  updateRecordTimeDisplay();
+  recordIndicator.classList.remove('hidden');
+  recordingTimerId = setInterval(updateRecordTimeDisplay, 500);
+}
+
+async function stopRecording() {
+  if (!isRecording) {
+    return;
+  }
+
+  isRecording = false;
+  clearInterval(recordingTimerId);
+  recordingTimerId = null;
+  recordIndicator.classList.add('hidden');
+  updateRecordButton();
+
+  const finishedMimeType = mediaRecorder.mimeType || 'audio/webm';
+  const stopped = new Promise(resolve => mediaRecorder.addEventListener('stop', resolve, { once: true }));
+  mediaRecorder.stop();
+  await stopped;
+
+  try {
+    recordingSourceNode.disconnect(recordingDestination);
+  } catch {
+    // Ignore -- the AudioContext may already be closing on its own.
+  }
+  recordingSourceNode  = null;
+  recordingDestination = null;
+
+  const audioBlob = new Blob(recordedChunks, { type: finishedMimeType });
+  const logBlob    = new Blob([JSON.stringify(recordedEvents, null, 2)], { type: 'application/json' });
+  recordedChunks = [];
+  recordedEvents = [];
+
+  await saveRecording(audioBlob, logBlob, finishedMimeType);
+  mediaRecorder = null;
+}
+
+async function saveRecording(audioBlob, logBlob, mimeType) {
+  const stamp     = new Date().toISOString().replace(/[:.]/g, '-');
+  const extension = extensionForMimeType(mimeType);
+  const audioFile = new File([audioBlob], `beatfinder-${stamp}.${extension}`, { type: mimeType });
+  const logFile    = new File([logBlob], `beatfinder-${stamp}.json`, { type: 'application/json' });
+
+  if (navigator.canShare && navigator.canShare({ files: [audioFile, logFile] })) {
+    try {
+      await navigator.share({ files: [audioFile, logFile] });
+      return;
+    } catch (err) {
+      // Log errors but allow user-initiated cancellation.
+      if (err?.name === 'AbortError') {
+        return;
+      }
+
+      console.error('[record]', err);
+    }
+  }
+
+  // Offer individual files so they dont get blocked.
+  showSaveRecordingPanel(audioFile, logFile);
+}
+
+function showSaveRecordingPanel(audioFile, logFile) {
+  saveRecordingPanel.classList.remove('hidden');
+
+  saveAudioBtn.disabled = false;
+  saveAudioBtn.textContent = 'Save Audio';
+  saveAudioBtn.onclick = () => {
+    downloadFile(audioFile);
+    saveAudioBtn.disabled = true;
+    saveAudioBtn.textContent = 'Audio Saved';
+    hideSaveRecordingPanelIfDone();
+  };
+
+  saveLogBtn.disabled = false;
+  saveLogBtn.textContent = 'Save Log';
+  saveLogBtn.onclick = () => {
+    downloadFile(logFile);
+    saveLogBtn.disabled = true;
+    saveLogBtn.textContent = 'Log Saved';
+    hideSaveRecordingPanelIfDone();
+  };
+}
+
+function hideSaveRecordingPanelIfDone() {
+  if (saveAudioBtn.disabled && saveLogBtn.disabled) {
+    saveRecordingPanel.classList.add('hidden');
+  }
+}
+
+function downloadFile(file) {
+  const url = URL.createObjectURL(file);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = file.name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke after a short delay to let the download manager catch up, if needed.
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+if (mediaRecorderSupported) {
+  recordBtn.addEventListener('click', () => {
+    if (isRecording) {
+      stopRecording();
+    } else if (!activeAudioContext || !activeSourceNode) {
+      displayError('Start the mic or open a file before recording.');
+    } else {
+      startRecording();
+    }
+  });
+} else {
+  recordBtn.classList.add('hidden');
 }
 
 // ---- Tuning panel ----
@@ -484,6 +693,8 @@ async function startMicMode() {
   // 10x boost (20x total on mobile, plus hardware AGC) to bring quiet
   // ambient audio up to a detectable level.
   activeEngine = await startAudioEngine(audioContext, source, { boost: isMobile ? 20 : 10, audible: false });
+  activeAudioContext = audioContext;
+  activeSourceNode    = source;
 
   transitionTo(STATES.LIVE);
 }
@@ -541,6 +752,8 @@ async function loadAudioFile(file) {
   // amplitude threshold that a normally-mastered file rarely reaches on its
   // own, so without a boost it silently finds zero tempo candidates.
   activeEngine = await startAudioEngine(audioContext, source, { boost: 10, audible: true });
+  activeAudioContext = audioContext;
+  activeSourceNode    = source;
 }
 
 function handlePlayPauseToggle() {
