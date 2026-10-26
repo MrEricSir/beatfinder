@@ -9,3 +9,4 @@ test-results/
 
 # Used for local tests (not source)
 audio/
+debug/

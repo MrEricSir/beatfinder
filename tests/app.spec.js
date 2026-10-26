@@ -232,3 +232,109 @@ test('stopping a recording offers Save Audio and Save Log as two separate downlo
 
   await expect(page.locator('#save-recording-panel')).toBeHidden();
 });
+
+test('recording started after tempo already locked backfills the missed bpmChange', async ({ page }) => {
+  await openControls(page);
+
+  // Simulate tempo having locked before Record was pressed, rather than
+  // waiting out a real lock -- lastKnownBpm is exactly what a real
+  // bpmChange handler would have set.
+  await page.evaluate(() => { lastKnownBpm = 128; });
+
+  await page.locator('#btn-record').click();
+  const firstEvent = await page.evaluate(() => recordedEvents[0]);
+  expect(firstEvent).toEqual({ t: 0, event: 'bpmChange', bpm: 128, initial: true });
+
+  await page.locator('#btn-record').click();
+});
+
+test('recording started before any tempo lock does not backfill a bpmChange', async ({ page }) => {
+  await openControls(page);
+
+  await page.evaluate(() => { lastKnownBpm = null; });
+
+  await page.locator('#btn-record').click();
+  const hasBpmChange = await page.evaluate(() => recordedEvents.some(e => e.event === 'bpmChange'));
+  expect(hasBpmChange).toBe(false);
+
+  await page.locator('#btn-record').click();
+});
+
+// ---- Mic boost auto-throttle ----
+
+test('a recent stored boost is used as the starting point; a stale one is ignored', async ({ page }) => {
+  await page.goto('/');
+
+  await page.evaluate(() => {
+    localStorage.setItem('beatfinder.micBoost', JSON.stringify({ boost: 3, ts: Date.now() }));
+  });
+  await expect.poll(() => page.evaluate(() => loadStoredBoost())).toBe(3);
+
+  await page.evaluate(() => {
+    const thirteenHoursAgo = Date.now() - 13 * 60 * 60 * 1000;
+    localStorage.setItem('beatfinder.micBoost', JSON.stringify({ boost: 3, ts: thirteenHoursAgo }));
+  });
+  await expect.poll(() => page.evaluate(() => loadStoredBoost())).toBe(null);
+});
+
+test('nextBoostState throttles down immediately on overload', async ({ page }) => {
+  await page.goto('/');
+
+  const result = await page.evaluate(() => nextBoostState({
+    peak: 0.5, currentBoost: 20, defaultBoost: 20, quietStreak: 0,
+  }));
+  // target 0.75 / peak 0.5 => ideal boost 1.5, well below currentBoost 20.
+  expect(result.boost).toBe(1.5);
+  expect(result.quietStreak).toBe(0);
+});
+
+test('nextBoostState only recovers boost after sustained headroom, and caps at the default', async ({ page }) => {
+  await page.goto('/');
+
+  const results = await page.evaluate(() => {
+    // peak 0.03 at boost 2 => actual level 0.06, well under the 0.75
+    // target -- consistent, sustained headroom every tick.
+    let state = { boost: 2, quietStreak: 0 };
+    const history = [];
+    for (let i = 0; i < 9; i++) {
+      const next = nextBoostState({
+        peak: 0.03, currentBoost: state.boost, defaultBoost: 20, quietStreak: state.quietStreak,
+      });
+      state = { boost: next.boost ?? state.boost, quietStreak: next.quietStreak };
+      history.push({ appliedBoost: next.boost, quietStreak: next.quietStreak });
+    }
+    return history;
+  });
+
+  // Headroom persists for 7 ticks without crossing the consensus threshold...
+  for (const tick of results.slice(0, 7)) {
+    expect(tick.appliedBoost).toBe(null);
+    expect(tick.quietStreak).toBeGreaterThan(0);
+  }
+  // ...then on the 8th tick of sustained headroom, boost recovers upward
+  // (target 0.75 / peak 0.03 = 25, capped at the 20x default) and the
+  // streak resets.
+  expect(results[7].appliedBoost).toBe(20);
+  expect(results[7].quietStreak).toBe(0);
+});
+
+test('nextBoostState leaves boost alone when already close to the target', async ({ page }) => {
+  await page.goto('/');
+
+  // target 0.75 / peak 0.075 = ideal boost 10, equal to currentBoost -- no change.
+  const result = await page.evaluate(() => nextBoostState({
+    peak: 0.075, currentBoost: 10, defaultBoost: 20, quietStreak: 3,
+  }));
+  expect(result.boost).toBe(null);
+  expect(result.quietStreak).toBe(0);
+});
+
+test('mic mode starts at a recently stored throttled-down boost instead of the default', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    localStorage.setItem('beatfinder.micBoost', JSON.stringify({ boost: 2, ts: Date.now() }));
+  });
+
+  await page.locator('#overlay').click();
+  await expect.poll(() => page.evaluate(() => activeEngine?.getConfig().boost)).toBe(2);
+});

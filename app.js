@@ -196,8 +196,13 @@ let activeEngine        = null;
 let activeAudioContext  = null;
 let activeSourceNode    = null;
 
+// Track current BPM lock for debug info in recordings.
+let lastKnownBpm = null;
+
 async function startAudioEngine(audioContext, source, { boost, audible }) {
   if (audible) source.connect(audioContext.destination);
+
+  lastKnownBpm = null;
 
   const [{ createBeatFinder }, { createRealtimeBpmAnalyzer }] = await dependenciesPromise;
 
@@ -214,8 +219,16 @@ async function startAudioEngine(audioContext, source, { boost, audible }) {
   engine.on('downbeat', (payload) => { flashQuadrant(quadDownbeat); logRecordedEvent('downbeat', payload); });
   engine.on('loudnessSpike', (payload) => { flashQuadrant(quadLoudness); logRecordedEvent('loudnessSpike', payload); });
   engine.on('chordChange', (payload) => { flashQuadrant(quadChord); logRecordedEvent('chordChange', payload); });
-  engine.on('bpmChange', (payload) => { updateBpmDisplay(`${Math.round(payload.bpm)} BPM`); logRecordedEvent('bpmChange', payload); });
-  engine.on('tempoLost', () => { updateBpmDisplay('listening...'); logRecordedEvent('tempoLost', {}); });
+  engine.on('bpmChange', (payload) => {
+    updateBpmDisplay(`${Math.round(payload.bpm)} BPM`);
+    lastKnownBpm = payload.bpm;
+    logRecordedEvent('bpmChange', payload);
+  });
+  engine.on('tempoLost', () => {
+    updateBpmDisplay('listening...');
+    lastKnownBpm = null;
+    logRecordedEvent('tempoLost', {});
+  });
   engine.on('keyChange', (payload) => {
     quadKeyLabel.textContent = payload.key;
     flashQuadrant(quadKey);
@@ -234,6 +247,7 @@ function tearDownActiveEngine() {
   if (isRecording) {
     stopRecording();
   }
+  stopBoostThrottle();
 
   if (activeEngine) {
     // Safe here specifically because this app always builds a fresh
@@ -314,6 +328,11 @@ function startRecording() {
   recordedChunks     = [];
   recordedEvents     = [];
   recordingStartPerf = performance.now();
+
+  // Add BPM if we have it already.
+  if (lastKnownBpm !== null) {
+    recordedEvents.push({ t: 0, event: 'bpmChange', bpm: lastKnownBpm, initial: true });
+  }
 
   mediaRecorder.addEventListener('dataavailable', (e) => {
     if (e.data.size > 0) {
@@ -530,6 +549,10 @@ function buildTuningPanel() {
       const applyValue = (rawValue) => {
         valueText.textContent = rawValue;
         activeEngine?.setConfig({ [param.key]: Number(rawValue) });
+        // Allow manual override.
+        if (param.key === 'boost') {
+          boostManuallyOverridden = true;
+        }
       };
 
       let input;
@@ -669,6 +692,93 @@ function transitionTo(newState) {
 }
 
 //
+// Mic boost auto-throttle
+//
+// In a quieter environment we need to boost the audio before trying to get any
+// data out of it; in a louder environment we likely don't need to. We attempt to
+// juggle the gain amount so that the user can move between louder and quieter
+// areas, etc. with the code still running.
+
+const BOOST_STORAGE_KEY        = 'beatfinder.micBoost';
+const BOOST_STORAGE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const BOOST_TARGET_PEAK        = 0.75; // aim to land boosted peaks around here
+const BOOST_ADJUST_BAND        = 0.15; // +-15% threshold before changing gain
+const BOOST_RECOVER_CONSENSUS  = 8;    // seconds before boosting back up
+
+let boostManuallyOverridden = false;
+let boostThrottleIntervalId = null;
+let boostQuietStreak        = 0;
+
+function loadStoredBoost() {
+  try {
+    const { boost, ts } = JSON.parse(localStorage.getItem(BOOST_STORAGE_KEY));
+    if (typeof boost === 'number' && Date.now() - ts < BOOST_STORAGE_MAX_AGE_MS) return boost;
+  } catch {
+    // Slip through to default if there's no stored value available.
+  }
+  return null;
+}
+
+function storeBoost(boost) {
+  try {
+    localStorage.setItem(BOOST_STORAGE_KEY, JSON.stringify({ boost, ts: Date.now() }));
+  } catch {
+    // No storage is available (possibly private browsing, etc.)
+  }
+}
+
+// Decide if it's time to tweak the gain settings or leave 'em alone.
+function nextBoostState({ peak, currentBoost, defaultBoost, quietStreak }) {
+  const idealBoost = Math.max(1, Math.min(defaultBoost, Math.round((BOOST_TARGET_PEAK / peak) * 10) / 10));
+
+  if (idealBoost < currentBoost * (1 - BOOST_ADJUST_BAND)) {
+    return { boost: idealBoost, quietStreak: 0 };
+  }
+  if (idealBoost > currentBoost * (1 + BOOST_ADJUST_BAND)) {
+    const streak = quietStreak + 1;
+    return streak >= BOOST_RECOVER_CONSENSUS
+      ? { boost: idealBoost, quietStreak: 0 }
+      : { boost: null, quietStreak: streak };
+  }
+  return { boost: null, quietStreak: 0 };
+}
+
+function startBoostThrottle(audioContext, sourceNode, defaultBoost) {
+  boostManuallyOverridden = false;
+  boostQuietStreak        = 0;
+
+  const levelAnalyser = audioContext.createAnalyser();
+  levelAnalyser.fftSize = 1024;
+  sourceNode.connect(levelAnalyser);
+  const buffer = new Float32Array(levelAnalyser.fftSize);
+
+  boostThrottleIntervalId = setInterval(() => {
+    if (!activeEngine || boostManuallyOverridden) return;
+
+    levelAnalyser.getFloatTimeDomainData(buffer);
+    let peak = 0;
+    for (const sample of buffer) peak = Math.max(peak, Math.abs(sample));
+    if (peak < 0.001) return; // near-silence -- not enough signal to judge
+
+    const { boost, quietStreak } = nextBoostState({
+      peak, defaultBoost, quietStreak: boostQuietStreak,
+      currentBoost: activeEngine.getConfig().boost,
+    });
+    boostQuietStreak = quietStreak;
+    if (boost === null) return;
+
+    activeEngine.setConfig({ boost });
+    syncTuningPanelFromEngine(activeEngine);
+    storeBoost(boost);
+  }, 1000);
+}
+
+function stopBoostThrottle() {
+  clearInterval(boostThrottleIntervalId);
+  boostThrottleIntervalId = null;
+}
+
+//
 // Mic mode
 //
 
@@ -691,10 +801,14 @@ async function startMicMode() {
 
   const source = audioContext.createMediaStreamSource(micStream);
   // 10x boost (20x total on mobile, plus hardware AGC) to bring quiet
-  // ambient audio up to a detectable level.
-  activeEngine = await startAudioEngine(audioContext, source, { boost: isMobile ? 20 : 10, audible: false });
+  // ambient audio up to a detectable level with auto gain throttle.
+  const defaultBoost = isMobile ? 20 : 10;
+  const storedBoost   = loadStoredBoost();
+  const initialBoost  = (storedBoost && storedBoost < defaultBoost) ? storedBoost : defaultBoost;
+  activeEngine = await startAudioEngine(audioContext, source, { boost: initialBoost, audible: false });
   activeAudioContext = audioContext;
   activeSourceNode    = source;
+  startBoostThrottle(audioContext, source, defaultBoost);
 
   transitionTo(STATES.LIVE);
 }
