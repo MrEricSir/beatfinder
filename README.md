@@ -71,16 +71,12 @@ engine.stop();
 `engine.on(event, handler)` returns an unsubscribe function. `engine.off(event, handler)`
 also works.
 
-`engine.stop()` tears down everything the engine created itself (analyzers,
-internal gain/filter nodes, timers) but -- since it didn't create the
-`audioContext` or `source` you handed it -- leaves both of those alone by
-default. If this engine owns a dedicated `AudioContext` created just for it,
-pass `engine.stop({ closeContext: true })` to close it. 
+`engine.stop()` tears down what it created itself (analyzers, nodes,
+timers). `audioContext`/`source` are caller-owned, left alone unless
+`{ closeContext: true }` is set, which will tear down the audioContext.
 
-Note: Meyda's analyzers have no API to release its internal processing node
-short of closing the `AudioContext`, so leaving `closeContext` false means
-`chordChange`/`keyChange`'s nodes keep lightly processing silence until the
-context is eventually closed.
+Note: without `closeContext`, Meyda's `chordChange`/`keyChange` nodes
+keep processing silence until the context is closed.
 
 ### Live configuration changes
 
@@ -94,13 +90,10 @@ engine.getConfig();                        // -> { boost: 10, loudnessSpikeHigh:
 engine.setConfig({ chordDistanceThresholdMult: 1.2 });  // more sensitive chordChange
 ```
 
-Values not mentioned in `setConfig`'s argument are left unchanged -- it
-merges over the current config rather than replacing it. Changes take
-effect on the very next audio frame, except `chordChromaBufferSize` and
-`keyAnalysisBufferSize`: Meyda can't resize an existing analyzer's FFT
-window, so changing either of those tears down and recreates just that one
-analyzer (a brief gap in that analyzer's output only -- everything else
-keeps running).
+`setConfig` merges over the current config. Values not included are left
+alone. Takes effect on next frame, except `chordChromaBufferSize` and
+`keyAnalysisBufferSize`: Meyda can't resize an FFT window, so these
+rebuild just that one analyzer.
 
 ## The demo app
 
@@ -119,21 +112,15 @@ value in `DEFAULT_CONFIG`, generated from a small schema in `app.js` (see
 `TUNING_GROUPS`) rather than hand-written per field. It's a demonstration
 of `getConfig`/`setConfig`, not a separate feature of the library itself.
 
-A **Record** button captures the same (pre-boost) audio the active engine
-is analyzing, along with a timestamped JSON log of every event it emits,
-so a real-world session -- a club set, a show -- can be checked for
-accuracy afterward instead of only tuned live in the moment. Recording
-works in both Mic and Open File mode; switching modes is disabled while a
-recording is in progress, since both the engine and the recording are
-built on the same `AudioContext`.
+A **Record** button captures the active (pre-boost) audio plus a
+timestamped JSON log of every event, so a real session can be checked for
+accuracy afterward. Works in both Mic and Open File mode; mode-switching
+is disabled while recording (same `AudioContext` for both).
 
-Saving uses the Web Share API when the platform supports sharing files
-(this is how iOS gets the two files out of the browser -- the native
-share sheet's "Save to Files" can write straight to iCloud Drive). Where
-that isn't available, two buttons appear for saving the audio and the log
-separately -- browsers silently block a second automatic download that
-isn't tied to its own direct click, so one combined "download both"
-button wouldn't reliably deliver both files.
+Saving uses the Web Share API where available (iOS: share sheet -> Save
+to Files -> iCloud Drive). Otherwise, two separate buttons -- browsers
+silently block a second automatic download, so one "save both" button
+wouldn't reliably work.
 
 ## Development
 
@@ -176,28 +163,30 @@ back into alignment on every kick. Which of the 4 beats in a measure is
 `downbeat` is decided by comparing average kick-band energy across the 4
 beat positions and following whichever is consistently strongest.
 
+The `peak` event is from realtime-bpm-analyzer, but filtered to only fire
+once for a given period rather than per sample.
+
 Tempo locking is deliberately conservative: a candidate tempo needs to hold
-for 8 seconds before it's even considered, and a candidate that's a simple
-ratio (half, double, three-against-two, etc.) of the current lock needs far
-more sustained agreement than an unrelated tempo would, since that's a
-common tempo-detector confusion on syncopated or breakbeat-heavy material.
+for 8 seconds. A candidate that's a ratio (half, double, etc.) of the
+currently locked tempo needs to hold longer, to resist false positives from
+pattern changes (beat shifts, drum fills, etc.)
 
 Two more analyzers run off Meyda's `chroma` feature (energy per pitch
 class, independent of octave), at different buffer sizes since they're
 solving different problems:
-- **`chordChange`** uses a moderate buffer (2048 samples, ~46 ms) and
-  compares each frame's chroma vector to the previous one (cosine
-  distance). A sharp shift in pitch-class balance above the recent rolling
-  average fires the event. This is deliberately not a generic loudness
-  trigger -- a repeating drum pattern is mostly noise-like and keeps
-  roughly the same chroma shape hit after hit, so it doesn't fire nearly
-  as often as an actual chord change does. It's still not a perfect chord
-  detector -- percussion has some tonal content too.
-- **`keyChange`** uses a large buffer (8192 samples) and smooths chroma
-  over time, correlating it against the 24 Krumhansl-Schmuckler major/minor
-  key profiles. A candidate key has to win several consecutive readings
-  before it's reported, so detecting an actual key change takes a couple
-  of seconds rather than flickering.
+- **`chordChange`**: moderate buffer (2048 samples, ~46ms), cosine
+  distance between consecutive chroma vectors. Fires on a sharp shift
+  above the rolling average -- not a generic loudness trigger, since a
+  repeating drum pattern keeps roughly the same chroma shape hit after
+  hit. Still imperfect (percussion has some tonal content).
+- **`keyChange`**: large buffer (8192 samples), chroma smoothed over
+  time and correlated against the 24 Krumhansl-Schmuckler key profiles. A
+  candidate must win several consecutive readings, so changes land over a
+  couple seconds rather than flickering.
+
+All audio is amplified by a `boost` value which is determined at runtime;
+this is intended to normalize the volume in live environments where it can
+vary between songs or while moving closer to or away from the speakers.
 
 ## Dependencies
 

@@ -37,97 +37,101 @@ Usage:
   // Later, to release everything (closes the AudioContext):
   engine.stop();
 
-This library is dependency-free at the module level: Meyda and realtime-bpm-analyzer
-are passed in by the caller rather than bundled or imported internally, so it can
-be dropped into a page with a plain <script> tag and no build step.
+Dependency-free at module level: Meyda and realtime-bpm-analyzer are passed
+in by the caller, not bundled -- drop-in via <script>, no build step.
 
 How it works:
-  1. Builds one shared web audio graph for four detectors:
+  1. One shared web audio graph, four detectors:
     a. createBeatTracker
     b. createLoudnessSpikeDetector
     c. createChordAnalyzer
     d. createKeyAnalyzer
-  2. Feeds audio input and config to each detector.
-  3. Emits events corresponding with changes in rhythm, loudness, and harmony
+  2. Audio + config feed each detector.
+  3. Events fire for rhythm, loudness, and harmony changes.
 
-The defaults in the library are well tested on iPhones with live electronic
-music (think club DJs, etc.) but can be tweaked as needed.
+Defaults are tuned for iPhones + live electronic music (club DJs); tweak as needed.
 */
 
 //
 // Tunable defaults
 //
-// Every value here can be overridden at construction time (as an extra
-// property alongside audioContext/source/Meyda/etc.) or changed later via
-// engine.setConfig(). All of them take effect immediately except
-// chordChromaBufferSize and keyAnalysisBufferSize, which rebuild the
-// affected Meyda analyzer (a brief, one-frame gap in that analyzer's
-// output) since Meyda can't resize an existing analyzer's FFT window.
+// Overridable at construction or via engine.setConfig(). All apply
+// immediately except: chordChromaBufferSize/keyAnalysisBufferSize (Meyda
+// can't resize an FFT window -- rebuilds that analyzer, one-frame gap)
+// and tempoStabilizationMs (construction-time only).
 
 const DEFAULT_CONFIG = {
-  // Gain applied to the internal analysis chain only -- never to anything
-  // routed to speakers. Quiet mic input typically needs 10-20x; a file
-  // being played back out loud usually needs less.
+  // Analysis-chain gain only, never audible. Mic: 10-20x; loud file: less.
   boost: 1,
 
-  // No detected peak for this long drops the tempo lock and emits tempoLost.
+  // Min gap between 'peak' events. validPeak fires per scanned chunk --
+  // too frequent; over-fires on sustained drums/cymbals.
+  peakRefractoryMs: 225,
+
+  // Tempo prior center. 120 is a reasonably common default.
+  preferredBpm: 120,
+  // Prior spread, in octaves. Smaller pulls harder.
+  preferredBpmSpread: 0.3,
+
+  // Spread for a tighter prior toward the current lock (see pickTopCandidate).
+  lockedBpmSpread: 0.2,
+
+  // Penalty when a slower candidate looks like this one's fundamental
+  // (see pickTopCandidate). 0 = off; 1 = full weight.
+  subharmonicWeight: 0.5,
+
+  // How often tempo-candidate history resets (continuousAnalysis below)
+  // Adapts to real tempo changes.
+  tempoStabilizationMs: 10_000,
+
+  // No peak for this long -> drop lock, emit tempoLost.
   silenceTimeoutMs: 8_000,
 
-  // A candidate tempo needs to differ from the current lock by more than
-  // this (as a fraction) to even be considered for a re-lock.
+  // Min fractional drift from lock to even consider a re-lock.
   relockDrift: 0.10,
   // Consecutive agreeing readings needed to accept a re-lock.
   relockConsensus: 3,
-  // Consecutive agreeing readings needed instead, when the candidate is a
-  // suspiciously simple ratio (half, double, three-against-two, etc.) of
-  // the current lock -- a common tempo-detector confusion on syncopated or
-  // breakbeat-heavy material, so it needs much stronger evidence.
+  // Same, but for a suspiciously simple ratio of the lock (half, double,
+  // 3:2, etc.) -- a common confusion on breakbeat material, so it needs
+  // stronger evidence.
   relockConsensusSuspicious: 15,
   suspiciousRatioTolerance: 0.04,
-  // A new tempo lock is immune to re-lock consideration for this long,
-  // regardless of relockConsensus -- real tempo changes don't happen every
-  // few seconds, so this alone kills most rapid flip-flopping.
+  // New lock is immune to re-lock for this long, should kill 
+  // detected tempo flip-flips.
   minLockHoldMs: 8_000,
 
-  // downbeat picks whichever of the 4 beat positions has the strongest
-  // average kick-band energy. Per-position sample count needed before that
-  // comparison is trusted:
+  // downbeat = strongest avg kick-band energy of the 4 positions.
+  // Samples needed per position before trusting that comparison:
   downbeatPhaseMinSamples: 8,
-  // Weight given to each new energy sample in that position's running average.
+  // Weight per new energy sample in a position's running average.
   downbeatPhaseEmaWeight: 0.15,
-  // A challenger position must be this many times stronger than the
-  // current downbeat position to take over (avoids flicker between two
-  // near-tied positions).
+  // Challenger must be this many times stronger to take over (avoids
+  // flicker between near-tied positions).
   downbeatPhaseSwitchMargin: 1.15,
 
-  // loudnessSpike fires when the rolling loudness percentile rises above
-  // loudnessSpikeHigh, and re-arms once it falls back below loudnessSpikeLow.
+  // Fires above loudnessSpikeHigh; re-arms below loudnessSpikeLow.
   loudnessSpikeHigh: 0.85,
   loudnessSpikeLow: 0.6,
 
-  // FFT window for the chordChange analyzer, in samples. Smaller feels more
-  // immediate; larger gives cleaner pitch-class resolution.
+  // FFT window (samples). Smaller = more immediate; larger = cleaner
+  // pitch-class resolution.
   chordChromaBufferSize: 2048,
-  // How many recent frames' distances to keep for the rolling mean/stddev
-  // that chordChange's threshold is based on.
-  chordDistanceHistorySize: 20,
-  // chordChange fires when a frame's chroma distance from the previous
-  // frame exceeds (rolling mean + this many standard deviations). Lower is
-  // more sensitive.
+  // Frames kept for chordChange's rolling mean/stddev threshold. Wider
+  // avoids a repeating pattern (kick/snare) looking like baseline.
+  chordDistanceHistorySize: 40,
+  // Fires above (rolling mean + N stddev) chroma distance. Lower = more
+  // sensitive. A crossing is just a candidate now (see
+  // createChordAnalyzer) -- doesn't need to reject transients alone.
   chordDistanceThresholdMult: 2,
-  // Minimum gap between chordChange events, so one transient can't
-  // multi-fire while its energy decays.
+  // Min gap between chordChange events -- stops one transient multi-firing.
   chordRefractoryMs: 150,
 
-  // FFT window for the key analyzer, in samples. Larger gives better bass
-  // resolution (helpful for chroma accuracy) at the cost of a slower
-  // update rate.
+  // FFT window (samples). Larger = better bass resolution, slower updates.
   keyAnalysisBufferSize: 8_192,
-  // Weight given to each new chroma frame when smoothing over time (higher
-  // = faster but noisier).
+  // Per-frame smoothing weight -- higher = faster, noisier.
   keyChromaSmoothing: 0.3,
-  // Consecutive agreeing frames needed before keyChange actually fires.
-  // Higher means slower to react but less flicker between ambiguous keys.
+  // Consecutive agreeing frames before keyChange fires. Higher = slower,
+  // less flicker.
   keyConsensusFrames: 8,
 };
 
@@ -155,15 +159,13 @@ function createEmitter() {
 //
 // Beat + tempo tracking
 //
-// Turns realtime-bpm-analyzer's raw peak/tempo events into three things:
-//   - peak, fired directly on every raw kick/transient it detects.
-//   - predictedBeat, from a phase-corrected beat grid: once tempo locks, a
-//     setTimeout chain ticks on every beat, and each detected peak nudges
-//     its phase back into alignment.
-//   - downbeat, whichever of those 4 scheduled beats currently has the
-//     strongest average kick-band energy (most music accents beat 1).
-//   - bpmChange / tempoLost, from a deliberately conservative tempo lock:
-//     see relockConsensus and friends in DEFAULT_CONFIG above for why.
+// Turns realtime-bpm-analyzer's raw peak/tempo events into:
+//   - peak: every raw kick/transient.
+//   - predictedBeat: phase-corrected beat grid -- setTimeout chain ticks
+//     each beat; peaks nudge phase back into alignment.
+//   - downbeat: whichever of the 4 ticks has the strongest avg kick-band
+//     energy (most music accents beat 1).
+//   - bpmChange / tempoLost: see relockConsensus etc. in DEFAULT_CONFIG.
 
 function clampBpmToRange(bpm) {
   while (bpm > 160) bpm /= 2;
@@ -171,11 +173,18 @@ function clampBpmToRange(bpm) {
   return bpm;
 }
 
-const SUSPICIOUS_TEMPO_RATIOS = [0.5, 2, 1 / 3, 3, 2 / 3, 1.5, 0.25, 4];
+// Ratios commonly confused with the real tempo (breakbeats, fills, swells).
+const SUSPICIOUS_TEMPO_RATIOS = [0.5, 2, 1 / 3, 3, 2 / 3, 1.5, 0.25, 4, 1.2, 5 / 6];
 
 function isSuspiciousTempoRatio(candidateBpm, lockedBpm, tolerance) {
   const ratio = candidateBpm / lockedBpm;
   return SUSPICIOUS_TEMPO_RATIOS.some(suspicious => Math.abs(ratio - suspicious) / suspicious < tolerance);
+}
+
+// A Gaussian centered on logCenter, in log2-BPM space so octave
+// relationships are symmetric.
+function logNormalLogPrior(logBpm, logCenter, spread) {
+  return -0.5 * ((logBpm - logCenter) / spread) ** 2;
 }
 
 function createBeatTracker({ bpmAnalyser, kickEnergyAnalyser, config, emit }) {
@@ -195,19 +204,15 @@ function createBeatTracker({ bpmAnalyser, kickEnergyAnalyser, config, emit }) {
   let beatGridIntervalMs = 0;
   let lastPeakDetectedAt = performance.now();
 
-  // Which of the 4 beats in a measure is the real downbeat isn't known in
-  // advance -- most music accents it with a stronger kick, so we track
-  // average kick-band energy per beat position (a slowly-updated EMA, one
-  // slot refreshed per tick) and downbeat follows whichever position is
-  // currently strongest. Reset on every (re-)lock since tick numbering
-  // restarts from 1 then, and phase before that is meaningless.
+  // Real downbeat isn't known in advance -- track avg kick-band energy
+  // per beat position (slow EMA) and follow whichever is strongest.
+  // Reset on every (re-)lock: tick numbering restarts, old phase is stale.
   let phaseEnergyEma    = [null, null, null, null];
   let phaseSampleCounts = [0, 0, 0, 0];
   let downbeatPhase     = 0;
 
-  // Folds one beat position's newest energy sample into its running
-  // average, then re-checks whether a different position has pulled far
-  // enough ahead to take over as the downbeat.
+  // Folds in one position's newest energy sample, then checks whether
+  // another position has pulled ahead enough to take over as downbeat.
   function updateDownbeatPhase(phase, energy) {
     phaseEnergyEma[phase] = phaseEnergyEma[phase] === null
       ? energy
@@ -236,9 +241,8 @@ function createBeatTracker({ bpmAnalyser, kickEnergyAnalyser, config, emit }) {
 
   function scheduleBeatGrid(intervalMs, anchor) {
     // Bumping beatGridGeneration invalidates any scheduleNext chain still
-    // running from a previous lock -- its next setTimeout fires, sees a
-    // stale gen, and quietly stops rescheduling itself instead of ticking
-    // on top of the new grid.
+    // running from a previous lock -- it sees a stale gen and stops
+    // rescheduling instead of ticking on top of the new grid.
     const gen = ++beatGridGeneration;
     tempoIsLocked      = true;
     beatGridAnchor      = anchor;
@@ -267,23 +271,21 @@ function createBeatTracker({ bpmAnalyser, kickEnergyAnalyser, config, emit }) {
     scheduleBeatGrid(60_000 / bpm, performance.now());
   }
 
-  // Pending re-lock state: track consecutive readings that agree on a new tempo.
+  // Tracks consecutive readings that agree on a tempo, for both the first
+  // lock and any re-lock after it.
   let pendingBpm   = 0;
   let pendingCount = 0;
 
   function handleBpmReading(bpm) {
     if (lockedBpm > 0 && performance.now() - lastLockAt < config.minLockHoldMs) return;
 
-    if (lockedBpm === 0) {
-      applyLock(bpm);
-      return;
-    }
-
-    const driftFromLock = Math.abs(bpm - lockedBpm) / lockedBpm;
-    if (driftFromLock <= config.relockDrift) {
-      pendingBpm   = 0;
-      pendingCount = 0;
-      return;
+    if (lockedBpm > 0) {
+      const driftFromLock = Math.abs(bpm - lockedBpm) / lockedBpm;
+      if (driftFromLock <= config.relockDrift) {
+        pendingBpm   = 0;
+        pendingCount = 0;
+        return;
+      }
     }
 
     const driftFromPending = pendingBpm > 0 ? Math.abs(bpm - pendingBpm) / pendingBpm : 1;
@@ -294,37 +296,61 @@ function createBeatTracker({ bpmAnalyser, kickEnergyAnalyser, config, emit }) {
       pendingCount = 1;
     }
 
+    // Without this the first lock gets no corroboration -- a single
+    // stray reading would lock in unchallenged. isSuspiciousTempoRatio(bpm,
+    // 0, ...) is always false, so this falls back to plain relockConsensus pre-lock.
     const requiredConsensus = isSuspiciousTempoRatio(bpm, lockedBpm, config.suspiciousRatioTolerance)
       ? config.relockConsensusSuspicious
       : config.relockConsensus;
     if (pendingCount >= requiredConsensus) applyLock(bpm);
   }
 
+  // Re-ranks raw-count candidates: prior toward preferredBpm (as
+  // librosa does); tighter prior toward the current lock; penalty for
+  // looking like a harmonic of a slower candidate (subharmonic below).
   function pickTopCandidate(candidates) {
     if (!candidates?.length) return null;
-    return candidates.reduce((best, c) => (c.count > (best?.count ?? -1) ? c : best), null);
+    const logPreferred = Math.log2(config.preferredBpm);
+    const logLocked = lockedBpm > 0 ? Math.log2(lockedBpm) : null;
+    return candidates.reduce((best, c) => {
+      const logBpm = Math.log2(c.tempo);
+      let logPrior = logNormalLogPrior(logBpm, logPreferred, config.preferredBpmSpread);
+      if (logLocked !== null) {
+        logPrior += logNormalLogPrior(logBpm, logLocked, config.lockedBpmSpread);
+      }
+
+      // Weight by the subharmonic's own count -- a weak one shouldn't
+      // drag down a dominant candidate.
+      const subharmonic = candidates
+        .filter(o => o.tempo < c.tempo && isSuspiciousTempoRatio(c.tempo, o.tempo, config.suspiciousRatioTolerance))
+        .reduce((strongest, o) => (o.count > (strongest?.count ?? -1) ? o : strongest), null);
+      if (subharmonic) logPrior -= config.subharmonicWeight * Math.log1p(subharmonic.count);
+
+      const score = Math.log1p(c.count) + logPrior;
+      return score > (best?.score ?? -Infinity) ? { ...c, score } : best;
+    }, null);
   }
 
   bpmAnalyser.on('validPeak', () => {
     const now = performance.now();
+    if (now - lastPeakDetectedAt < config.peakRefractoryMs) return;
+
     emit('peak');
     lastPeakDetectedAt = now;
 
     if (!tempoIsLocked || beatGridIntervalMs === 0) return;
 
-    // Compute how far this peak sits from the nearest scheduled beat.
-    // fractional is in [0, 1); normalize to [-0.5, 0.5) so the sign tells us
-    // which direction the grid needs to shift.
+    // Distance from the nearest scheduled beat; normalize to [-0.5, 0.5)
+    // so the sign gives the shift direction.
     const beatsElapsed       = (now - beatGridAnchor) / beatGridIntervalMs;
     const fractional         = ((beatsElapsed % 1) + 1) % 1;
     const normalizedFraction = fractional > 0.5 ? fractional - 1 : fractional;
     const phaseErrorMs       = normalizedFraction * beatGridIntervalMs;
 
-    // Only act when the peak is within 40% of a beat boundary -- peaks that
-    // land in the middle of a beat interval are likely non-kick transients.
+    // Within 40% of a beat boundary only -- further off is likely a
+    // non-kick transient, not the beat.
     if (Math.abs(phaseErrorMs) < beatGridIntervalMs * 0.4) {
-      // Apply 25% of the error each peak (EMA) so corrections converge
-      // smoothly over several beats rather than jumping all at once.
+      // 25% correction per peak (EMA) -- converges smoothly, no jumps.
       beatGridAnchor += phaseErrorMs * 0.25;
     }
   });
@@ -362,13 +388,10 @@ function createBeatTracker({ bpmAnalyser, kickEnergyAnalyser, config, emit }) {
 //
 // Loudness "spike" detection
 //
-// beginLoudnessTracking maintains a rolling 30-second window of RMS values
-// and reports the percentile rank of the current RMS in that window
-// (0 = quietest, 1 = loudest), smoothed with an EMA so it responds
-// gradually over a few beats rather than jumping on transients.
-// createLoudnessSpikeDetector layers the loudnessSpike event on top: it
-// fires once when that percentile crosses loudnessSpikeHigh, then re-arms
-// once the level drops back below loudnessSpikeLow.
+// beginLoudnessTracking: rolling 30s RMS window -> percentile rank
+// (0 = quietest, 1 = loudest), EMA-smoothed against transients.
+// createLoudnessSpikeDetector: fires once above loudnessSpikeHigh,
+// re-arms below loudnessSpikeLow.
 
 const LOUDNESS_HISTORY_SIZE = 300; // 300 samples x 100 ms = 30 s
 
@@ -418,21 +441,16 @@ function createLoudnessSpikeDetector(analyserNode, config, emit) {
 //
 // Chord change + key detection (Meyda)
 //
-// Chord Change tracks Meyda's chroma feature (energy per pitch class,
-// independent of octave) and fires when the pitch-class *distribution*
-// shifts sharply from one frame to the next. This is deliberately not a
-// generic loudness/energy onset detector: a repeating drum pattern is
-// mostly noise-like and keeps roughly the same chroma shape hit after hit,
-// so it doesn't trigger this nearly as often as an actual new chord or note
-// does. It's still not a perfect chord detector -- percussion has some
-// tonal content too -- but it's far more specific than reacting to any loud
-// transient.
+// chordChange: Meyda chroma (per-pitch-class energy, octave-independent)
+// fires on a sharp pitch-class *distribution* shift -- not a generic
+// loudness detector, since a repeating drum pattern keeps roughly the
+// same chroma shape hit after hit. Still imperfect (percussion has some
+// tonal content), but far more specific than reacting to any loud transient.
 //
-// Key is a slower background analyzer: chroma is smoothed over time and
-// correlated against the 24 Krumhansl-Schmuckler major/minor key profiles.
-// A candidate key must win several consecutive readings in a row before
-// it's reported, so the display updates over a couple of seconds rather
-// than flickering.
+// keyChange: slower background analyzer -- chroma smoothed over time,
+// correlated against the 24 Krumhansl-Schmuckler key profiles. A
+// candidate must win several consecutive readings before it's reported,
+// so it updates over a couple seconds rather than flickering.
 
 function cosineDistance(a, b) {
   let dot = 0;
@@ -474,9 +492,8 @@ function bestKeyForChroma(chroma) {
   let bestName = null;
   let bestScore = -Infinity;
   for (let tonic = 0; tonic < 12; tonic++) {
-    // MAJOR_KEY_PROFILE/MINOR_KEY_PROFILE are written for a tonic of C
-    // (pitch class 0). Rotate each so its own index 0 lines up with this
-    // tonic, so it can be compared directly against the chroma vector.
+    // Profiles are written for tonic C (pitch class 0) -- rotate to align
+    // with this tonic for direct comparison against the chroma vector.
     const majorProfile = MAJOR_KEY_PROFILE.map((_, i) => MAJOR_KEY_PROFILE[(i - tonic + 12) % 12]);
     const minorProfile = MINOR_KEY_PROFILE.map((_, i) => MINOR_KEY_PROFILE[(i - tonic + 12) % 12]);
     const majorScore = correlate(chroma, majorProfile);
@@ -493,15 +510,17 @@ function meanAndStdDev(values) {
   return { mean, stdDev: Math.sqrt(variance) };
 }
 
-// config is read live on every callback (not captured), so changes via
-// setConfig take effect on the very next audio frame -- except bufferSize,
-// which is fixed at analyzer-creation time and requires the caller to tear
-// down and recreate the analyzer (see setConfig in createBeatFinder).
+// config is read live each callback, so setConfig takes effect next
+// frame -- except bufferSize, fixed at analyzer creation (see setConfig
+// in createBeatFinder).
 
 function createChordAnalyzer(Meyda, audioContext, source, config, emit) {
   let previousChroma  = null;
   let distanceHistory = [];
   let lastChordFireAt = 0;
+  // A frame that crossed the threshold, pending the next frame's
+  // confirmation that it stuck.
+  let candidate = null;
 
   const analyzer = Meyda.createMeydaAnalyzer({
     audioContext,
@@ -520,6 +539,18 @@ function createChordAnalyzer(Meyda, audioContext, source, config, emit) {
       const distance = cosineDistance(chroma, previousChroma);
       previousChroma = chroma.slice();
 
+      // Real change holds -- next frame stays close. A transient reverts
+      // instead, so this catches it before firing.
+      if (candidate) {
+        const stayedPut = cosineDistance(chroma, candidate.chroma) < candidate.typicalDistance;
+        const now = performance.now();
+        if (stayedPut && now - lastChordFireAt > config.chordRefractoryMs) {
+          lastChordFireAt = now;
+          emit('chordChange', { distance: candidate.distance });
+        }
+        candidate = null;
+      }
+
       distanceHistory.push(distance);
       if (distanceHistory.length > config.chordDistanceHistorySize) distanceHistory.shift();
       if (distanceHistory.length < 10) return;
@@ -527,10 +558,8 @@ function createChordAnalyzer(Meyda, audioContext, source, config, emit) {
       const { mean, stdDev } = meanAndStdDev(distanceHistory);
       const threshold = mean + stdDev * config.chordDistanceThresholdMult;
 
-      const now = performance.now();
-      if (distance > threshold && now - lastChordFireAt > config.chordRefractoryMs) {
-        lastChordFireAt = now;
-        emit('chordChange', { distance });
+      if (distance > threshold) {
+        candidate = { chroma: chroma.slice(), distance, typicalDistance: mean };
       }
     },
   });
@@ -582,10 +611,8 @@ function createKeyAnalyzer(Meyda, audioContext, source, config, emit) {
 //
 // Main library engine
 //
-// Builds one shared Web Audio graph, then hands pieces of it to the four
-// detector factories above. createBeatFinder itself owns no detection
-// logic -- just the graph and the plumbing to construct/reconfigure/tear
-// down those four detectors together.
+// One shared Web Audio graph, handed to the four detector factories
+// above. No detection logic here -- just the graph and plumbing.
 
 export async function createBeatFinder({ audioContext, source, Meyda, createRealtimeBpmAnalyzer, ...configOverrides }) {
   const config  = { ...DEFAULT_CONFIG, ...configOverrides };
@@ -618,7 +645,7 @@ export async function createBeatFinder({ audioContext, source, Meyda, createReal
 
   const bpmAnalyser = await createRealtimeBpmAnalyzer(audioContext, {
     continuousAnalysis: true,
-    stabilizationTime:  10_000,
+    stabilizationTime:  config.tempoStabilizationMs,
     debug:              true,
   });
 
@@ -663,19 +690,12 @@ export async function createBeatFinder({ audioContext, source, Meyda, createReal
     off: emitter.off,
     getConfig: () => ({ ...config }),
     setConfig,
-    // audioContext and source were both handed to us by the caller, not
-    // created by us -- stop() only tears down what this engine created
-    // itself (analyzers, internal nodes, timers), and leaves the caller's
-    // own nodes and context alone by default. Pass { closeContext: true }
-    // only if this engine owns a dedicated AudioContext created just for
-    // it (as the demo app does); never do this if the context is shared
-    // with anything else, since closing it breaks all audio on it.
-    //
-    // Caveat: Meyda's analyzers have no public API to fully release their
-    // internal ScriptProcessorNode short of closing the AudioContext, so
-    // with closeContext left false, chordChange/keyChange's nodes keep
-    // lightly processing silence until the caller eventually closes the
-    // context themselves.
+    // audioContext/source are caller-owned -- stop() only tears down what
+    // this engine created. closeContext: true only if this engine owns a
+    // dedicated context (never if shared -- closes all audio on it).
+    // Caveat: without closeContext, Meyda's analyzers keep lightly
+    // processing silence until the context is eventually closed (no API
+    // to release their internal node otherwise).
     stop({ closeContext = false } = {}) {
       beatTracker.stop();
       loudnessSpikeDetector.stop();

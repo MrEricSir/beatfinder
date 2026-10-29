@@ -9,6 +9,18 @@
 export interface BeatFinderConfig {
   /** Gain applied to the internal analysis chain only -- never to audio routed to speakers. */
   boost: number;
+  /** Minimum gap between "peak" events, so one transient can't multi-fire as it rings out. */
+  peakRefractoryMs: number;
+  /** Tempo candidates are weighted toward this value (a log-normal prior) when ranking which one to trust. */
+  preferredBpm: number;
+  /** Spread (in octaves) of that prior -- smaller pulls harder toward preferredBpm. */
+  preferredBpmSpread: number;
+  /** Spread (in octaves) of a second, tighter prior pulling toward whatever tempo is currently locked. */
+  lockedBpmSpread: number;
+  /** How strongly a candidate is weighed down when a slower candidate in the same reading looks like its fundamental. */
+  subharmonicWeight: number;
+  /** How often tempo-candidate history resets so genuine tempo changes can be tracked. Construction-time only. */
+  tempoStabilizationMs: number;
   /** No detected peak for this long drops the tempo lock and emits "tempoLost". */
   silenceTimeoutMs: number;
   /** "loudnessSpike" fires when the rolling loudness percentile rises above this. */

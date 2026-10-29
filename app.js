@@ -161,19 +161,11 @@ const scopeAnimation = startScopeAnimation(document.getElementById('scope-canvas
 
 // ---- External dependencies ----
 //
-// beatfinder.js needs Meyda and realtime-bpm-analyzer handed to it already
-// loaded (see beatfinder.js's own header comment for why). Both are
-// gathered here, in one place, as soon as the page loads, rather than
-// wherever happens to need them first:
-//
-//   - Meyda's browser build is a plain global script, not an ES module --
-//     its only real ESM build has a bare `import "fftjs"` that only
-//     resolves inside a bundler, not from a plain URL in a browser -- so
-//     it's loaded via the <script> tag in index.html and read off
-//     `window` here.
-//   - realtime-bpm-analyzer does ship a working browser ESM build, so it's
-//     loaded with an ordinary dynamic import alongside beatfinder.js
-//     itself.
+// beatfinder.js needs Meyda + realtime-bpm-analyzer pre-loaded (see its
+// own header comment). Gathered here, once, on page load:
+//   - Meyda: global script, not ESM (its ESM build needs a bundler) --
+//     loaded via <script> in index.html, read off `window`.
+//   - realtime-bpm-analyzer: real ESM build, dynamic import works fine.
 
 const REALTIME_BPM_ANALYZER_URL =
   'https://cdn.jsdelivr.net/npm/realtime-bpm-analyzer@5.0.15/dist/index.esm.js';
@@ -187,16 +179,14 @@ const dependenciesPromise = Promise.all([
 
 // ---- Audio event engine ----
 //
-// The actual rhythm/chord/key detection lives in beatfinder.js as a
-// standalone library; this just wires its events to the quadrant flashes.
-// Only one engine runs at a time; starting a new one always tears down the
-// previous one first.
+// Detection lives in beatfinder.js; this wires its events to the quadrant
+// flashes. One engine at a time -- starting a new one tears down the old.
 
 let activeEngine        = null;
 let activeAudioContext  = null;
 let activeSourceNode    = null;
 
-// Track current BPM lock for debug info in recordings.
+// Current BPM lock, for backfilling into recordings.
 let lastKnownBpm = null;
 
 async function startAudioEngine(audioContext, source, { boost, audible }) {
@@ -250,9 +240,8 @@ function tearDownActiveEngine() {
   stopBoostThrottle();
 
   if (activeEngine) {
-    // Safe here specifically because this app always builds a fresh
-    // AudioContext per mic/file session (see startMicMode/loadAudioFile)
-    // and never shares one across engines.
+    // Safe: a fresh AudioContext per session, never shared (see
+    // startMicMode/loadAudioFile).
     activeEngine.stop({ closeContext: true });
     activeEngine = null;
   }
@@ -262,8 +251,8 @@ function tearDownActiveEngine() {
 }
 
 // ---- Recording ----
-
-// Capture the original audio before we analyze it here for later debugging.
+//
+// Captures raw audio + a timestamped event log, for later debugging.
 
 const mediaRecorderSupported = typeof MediaRecorder !== 'undefined';
 
@@ -329,7 +318,7 @@ function startRecording() {
   recordedEvents     = [];
   recordingStartPerf = performance.now();
 
-  // Add BPM if we have it already.
+  // Backfill bpm if already locked -- the real event won't fire again.
   if (lastKnownBpm !== null) {
     recordedEvents.push({ t: 0, event: 'bpmChange', bpm: lastKnownBpm, initial: true });
   }
@@ -401,7 +390,7 @@ async function saveRecording(audioBlob, logBlob, mimeType) {
     }
   }
 
-  // Offer individual files so they dont get blocked.
+  // Separate buttons. Second auto-download gets silently blocked.
   showSaveRecordingPanel(audioFile, logFile);
 }
 
@@ -441,7 +430,7 @@ function downloadFile(file) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  // Revoke after a short delay to let the download manager catch up, if needed.
+  // Let the download manager catch up.
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
@@ -461,16 +450,15 @@ if (mediaRecorderSupported) {
 
 // ---- Tuning panel ----
 //
-// Exposes every beatfinder.js config value as a slider (or a <select> for
-// the two Meyda buffer sizes, since those must be powers of 2), built from
-// a schema instead of hand-written HTML so adding or removing a tunable
-// value later only means editing this list.
+// Every beatfinder.js config value as a slider (or <select> for the two
+// power-of-2 Meyda buffer sizes), built from a schema, not hand-written HTML.
 
 const TUNING_GROUPS = [
   {
     title: 'General',
     params: [
       { key: 'boost', label: 'Boost', min: 1, max: 30, step: 1, default: 1 },
+      { key: 'peakRefractoryMs', label: 'Peak Refractory (ms)', min: 0, max: 500, step: 10, default: 225 },
       { key: 'silenceTimeoutMs', label: 'Silence Timeout (ms)', min: 1000, max: 20000, step: 500, default: 8000 },
     ],
   },
@@ -485,7 +473,7 @@ const TUNING_GROUPS = [
     title: 'Chord Change',
     params: [
       { key: 'chordChromaBufferSize', label: 'Buffer Size', options: [512, 1024, 2048, 4096, 8192], default: 2048 },
-      { key: 'chordDistanceHistorySize', label: 'History Size (frames)', min: 5, max: 60, step: 1, default: 20 },
+      { key: 'chordDistanceHistorySize', label: 'History Size (frames)', min: 5, max: 80, step: 1, default: 40 },
       { key: 'chordDistanceThresholdMult', label: 'Threshold (std devs)', min: 0.5, max: 5, step: 0.1, default: 2 },
       { key: 'chordRefractoryMs', label: 'Refractory (ms)', min: 0, max: 1000, step: 10, default: 150 },
     ],
@@ -501,6 +489,10 @@ const TUNING_GROUPS = [
   {
     title: 'Tempo Lock',
     params: [
+      { key: 'preferredBpm', label: 'Preferred BPM', min: 60, max: 200, step: 1, default: 120 },
+      { key: 'preferredBpmSpread', label: 'Preferred BPM Spread', min: 0.05, max: 1, step: 0.05, default: 0.3 },
+      { key: 'lockedBpmSpread', label: 'Locked BPM Spread', min: 0.05, max: 1, step: 0.05, default: 0.2 },
+      { key: 'subharmonicWeight', label: 'Subharmonic Weight', min: 0, max: 2, step: 0.1, default: 0.5 },
       { key: 'relockDrift', label: 'Relock Drift', min: 0.02, max: 0.5, step: 0.01, default: 0.10 },
       { key: 'relockConsensus', label: 'Relock Consensus', min: 1, max: 20, step: 1, default: 3 },
       { key: 'relockConsensusSuspicious', label: 'Relock Consensus (suspicious ratio)', min: 1, max: 40, step: 1, default: 15 },
@@ -549,7 +541,7 @@ function buildTuningPanel() {
       const applyValue = (rawValue) => {
         valueText.textContent = rawValue;
         activeEngine?.setConfig({ [param.key]: Number(rawValue) });
-        // Allow manual override.
+        // Manual change wins over auto-throttle.
         if (param.key === 'boost') {
           boostManuallyOverridden = true;
         }
@@ -694,12 +686,12 @@ function transitionTo(newState) {
 //
 // Mic boost auto-throttle
 //
-// In a quieter environment we need to boost the audio before trying to get any
-// data out of it; in a louder environment we likely don't need to. We attempt to
-// juggle the gain amount so that the user can move between louder and quieter
-// areas, etc. with the code still running.
+// Quiet room needs a boost; loud room doesn't. Adjusts gain live as the
+// room changes.
 
-const BOOST_STORAGE_KEY        = 'beatfinder.micBoost';
+// Separate stored boost per mode (mic and file).
+const BOOST_STORAGE_KEY_MIC    = 'beatfinder.micBoost';
+const BOOST_STORAGE_KEY_FILE   = 'beatfinder.fileBoost';
 const BOOST_STORAGE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const BOOST_TARGET_PEAK        = 0.75; // aim to land boosted peaks around here
 const BOOST_ADJUST_BAND        = 0.15; // +-15% threshold before changing gain
@@ -709,9 +701,9 @@ let boostManuallyOverridden = false;
 let boostThrottleIntervalId = null;
 let boostQuietStreak        = 0;
 
-function loadStoredBoost() {
+function loadStoredBoost(storageKey) {
   try {
-    const { boost, ts } = JSON.parse(localStorage.getItem(BOOST_STORAGE_KEY));
+    const { boost, ts } = JSON.parse(localStorage.getItem(storageKey));
     if (typeof boost === 'number' && Date.now() - ts < BOOST_STORAGE_MAX_AGE_MS) return boost;
   } catch {
     // Slip through to default if there's no stored value available.
@@ -719,15 +711,21 @@ function loadStoredBoost() {
   return null;
 }
 
-function storeBoost(boost) {
+// Default, or stored value if lower.
+function resolveInitialBoost(storageKey, defaultBoost) {
+  const storedBoost = loadStoredBoost(storageKey);
+  return (storedBoost && storedBoost < defaultBoost) ? storedBoost : defaultBoost;
+}
+
+function storeBoost(storageKey, boost) {
   try {
-    localStorage.setItem(BOOST_STORAGE_KEY, JSON.stringify({ boost, ts: Date.now() }));
+    localStorage.setItem(storageKey, JSON.stringify({ boost, ts: Date.now() }));
   } catch {
     // No storage is available (possibly private browsing, etc.)
   }
 }
 
-// Decide if it's time to tweak the gain settings or leave 'em alone.
+// Whether to adjust gain, and to what.
 function nextBoostState({ peak, currentBoost, defaultBoost, quietStreak }) {
   const idealBoost = Math.max(1, Math.min(defaultBoost, Math.round((BOOST_TARGET_PEAK / peak) * 10) / 10));
 
@@ -743,7 +741,7 @@ function nextBoostState({ peak, currentBoost, defaultBoost, quietStreak }) {
   return { boost: null, quietStreak: 0 };
 }
 
-function startBoostThrottle(audioContext, sourceNode, defaultBoost) {
+function startBoostThrottle(audioContext, sourceNode, defaultBoost, storageKey) {
   boostManuallyOverridden = false;
   boostQuietStreak        = 0;
 
@@ -769,7 +767,7 @@ function startBoostThrottle(audioContext, sourceNode, defaultBoost) {
 
     activeEngine.setConfig({ boost });
     syncTuningPanelFromEngine(activeEngine);
-    storeBoost(boost);
+    storeBoost(storageKey, boost);
   }, 1000);
 }
 
@@ -800,15 +798,13 @@ async function startMicMode() {
   if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
 
   const source = audioContext.createMediaStreamSource(micStream);
-  // 10x boost (20x total on mobile, plus hardware AGC) to bring quiet
-  // ambient audio up to a detectable level with auto gain throttle.
+  // 10x (20x on mobile, plus hardware AGC); auto-throttled from here.
   const defaultBoost = isMobile ? 20 : 10;
-  const storedBoost   = loadStoredBoost();
-  const initialBoost  = (storedBoost && storedBoost < defaultBoost) ? storedBoost : defaultBoost;
+  const initialBoost = resolveInitialBoost(BOOST_STORAGE_KEY_MIC, defaultBoost);
   activeEngine = await startAudioEngine(audioContext, source, { boost: initialBoost, audible: false });
   activeAudioContext = audioContext;
   activeSourceNode    = source;
-  startBoostThrottle(audioContext, source, defaultBoost);
+  startBoostThrottle(audioContext, source, defaultBoost, BOOST_STORAGE_KEY_MIC);
 
   transitionTo(STATES.LIVE);
 }
@@ -855,19 +851,16 @@ async function loadAudioFile(file) {
   timeTotalEl.textContent   = '--:--';
   attachAudioSeekListeners();
 
-  // Built once per loaded file -- an HTMLMediaElement can only ever be
-  // connected to a single MediaElementSourceNode, so play/pause below must
-  // reuse this engine rather than rebuilding it.
+  // One MediaElementSourceNode per element -- built once, reused by play/pause.
   const audioContext = createAudioContext();
   const source = audioContext.createMediaElementSource(audioPlayer);
-  // boost only affects the analysis chain, not what's heard (audible: true
-  // routes the unboosted signal straight to the speakers) -- but it's still
-  // needed here: realtime-bpm-analyzer's peak detector has a fixed minimum
-  // amplitude threshold that a normally-mastered file rarely reaches on its
-  // own, so without a boost it silently finds zero tempo candidates.
-  activeEngine = await startAudioEngine(audioContext, source, { boost: 10, audible: true });
+  // Analysis-only; audible: true sends the unboosted signal to speakers.
+  const defaultBoost = 10;
+  const initialBoost = resolveInitialBoost(BOOST_STORAGE_KEY_FILE, defaultBoost);
+  activeEngine = await startAudioEngine(audioContext, source, { boost: initialBoost, audible: true });
   activeAudioContext = audioContext;
   activeSourceNode    = source;
+  startBoostThrottle(audioContext, source, defaultBoost, BOOST_STORAGE_KEY_FILE);
 }
 
 function handlePlayPauseToggle() {

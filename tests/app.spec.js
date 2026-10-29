@@ -268,13 +268,24 @@ test('a recent stored boost is used as the starting point; a stale one is ignore
   await page.evaluate(() => {
     localStorage.setItem('beatfinder.micBoost', JSON.stringify({ boost: 3, ts: Date.now() }));
   });
-  await expect.poll(() => page.evaluate(() => loadStoredBoost())).toBe(3);
+  await expect.poll(() => page.evaluate(() => loadStoredBoost(BOOST_STORAGE_KEY_MIC))).toBe(3);
 
   await page.evaluate(() => {
     const thirteenHoursAgo = Date.now() - 13 * 60 * 60 * 1000;
     localStorage.setItem('beatfinder.micBoost', JSON.stringify({ boost: 3, ts: thirteenHoursAgo }));
   });
-  await expect.poll(() => page.evaluate(() => loadStoredBoost())).toBe(null);
+  await expect.poll(() => page.evaluate(() => loadStoredBoost(BOOST_STORAGE_KEY_MIC))).toBe(null);
+});
+
+test('a recent stored boost for file mode is kept separate from mic mode', async ({ page }) => {
+  await page.goto('/');
+
+  await page.evaluate(() => {
+    localStorage.setItem('beatfinder.micBoost', JSON.stringify({ boost: 5, ts: Date.now() }));
+    localStorage.setItem('beatfinder.fileBoost', JSON.stringify({ boost: 2, ts: Date.now() }));
+  });
+  await expect.poll(() => page.evaluate(() => loadStoredBoost(BOOST_STORAGE_KEY_MIC))).toBe(5);
+  await expect.poll(() => page.evaluate(() => loadStoredBoost(BOOST_STORAGE_KEY_FILE))).toBe(2);
 });
 
 test('nextBoostState throttles down immediately on overload', async ({ page }) => {
@@ -337,4 +348,15 @@ test('mic mode starts at a recently stored throttled-down boost instead of the d
 
   await page.locator('#overlay').click();
   await expect.poll(() => page.evaluate(() => activeEngine?.getConfig().boost)).toBe(2);
+});
+
+test('file mode starts at a recently stored throttled-down boost instead of the default', async ({ page }) => {
+  await openControls(page);
+  await page.evaluate(() => {
+    localStorage.setItem('beatfinder.fileBoost', JSON.stringify({ boost: 1.5, ts: Date.now() }));
+  });
+
+  const fixture = path.join(__dirname, '..', 'audio', 'basic-house-drums_130bpm.wav');
+  await page.locator('#file-input').setInputFiles(fixture);
+  await expect.poll(() => page.evaluate(() => activeEngine?.getConfig().boost)).toBe(1.5);
 });
